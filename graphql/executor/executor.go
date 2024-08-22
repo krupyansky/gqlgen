@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
@@ -23,6 +24,7 @@ type Executor struct {
 	errorPresenter graphql.ErrorPresenterFunc
 	recoverFunc    graphql.RecoverFunc
 	queryCache     graphql.Cache[*ast.QueryDocument]
+	fieldsCache    graphql.Cache[*graphql.QueryDocWrap]
 
 	parserTokenLimit int
 }
@@ -37,6 +39,7 @@ func New(es graphql.ExecutableSchema) *Executor {
 		errorPresenter:   graphql.DefaultErrorPresenter,
 		recoverFunc:      graphql.DefaultRecover,
 		queryCache:       graphql.NoCache[ast.QueryDocument, *ast.QueryDocument]{},
+		fieldsCache:      graphql.NoCache[graphql.QueryDocWrap, *graphql.QueryDocWrap]{},
 		ext:              processExtensions(nil),
 		parserTokenLimit: parserTokenNoLimit,
 	}
@@ -75,6 +78,10 @@ func (e *Executor) CreateOperationContext(
 		return rc, listErr
 	}
 
+	if doc, ok := e.fieldsCache.Get(ctx, params.Query); ok {
+		rc.CachedFields = doc.Fields
+	}
+
 	rc.Operation = rc.Doc.Operations.ForName(params.OperationName)
 	if rc.Operation == nil {
 		err := gqlerror.Errorf("operation %s not found", params.OperationName)
@@ -85,7 +92,8 @@ func (e *Executor) CreateOperationContext(
 	var err error
 	rc.Variables, err = validator.VariableValues(e.es.Schema(), rc.Operation, params.Variables)
 	if err != nil {
-		gqlErr, ok := err.(*gqlerror.Error)
+		var gqlErr *gqlerror.Error
+		ok := errors.As(err, &gqlErr)
 		if ok {
 			errcode.Set(gqlErr, errcode.ValidationFailed)
 			return rc, gqlerror.List{gqlErr}
@@ -107,6 +115,7 @@ func (e *Executor) DispatchOperation(
 	rc *graphql.OperationContext,
 ) (graphql.ResponseHandler, context.Context) {
 	ctx = graphql.WithOperationContext(ctx, rc)
+	hasCachedFields := len(rc.CachedFields) != 0
 
 	var innerCtx context.Context
 	res := e.ext.operationMiddleware(ctx, func(ctx context.Context) graphql.ResponseHandler {
@@ -114,6 +123,9 @@ func (e *Executor) DispatchOperation(
 
 		tmpResponseContext := graphql.WithResponseContext(ctx, e.errorPresenter, e.recoverFunc)
 		responses := e.es.Exec(tmpResponseContext)
+		if !hasCachedFields {
+			e.fieldsCache.Add(ctx, rc.RawQuery, &graphql.QueryDocWrap{Fields: rc.CachedFields})
+		}
 		if errs := graphql.GetErrors(tmpResponseContext); errs != nil {
 			return graphql.OneShot(&graphql.Response{Errors: errs})
 		}
@@ -199,7 +211,8 @@ func (e *Executor) parseQuery(
 
 	doc, err := parser.ParseQueryWithTokenLimit(&ast.Source{Input: query}, e.parserTokenLimit)
 	if err != nil {
-		gqlErr, ok := err.(*gqlerror.Error)
+		var gqlErr *gqlerror.Error
+		ok := errors.As(err, &gqlErr)
 		if ok {
 			errcode.Set(gqlErr, errcode.ParseFailed)
 			return nil, gqlerror.List{gqlErr}
@@ -211,7 +224,8 @@ func (e *Executor) parseQuery(
 
 	if len(doc.Operations) == 0 {
 		err = gqlerror.Errorf("no operation provided")
-		gqlErr, _ := err.(*gqlerror.Error)
+		var gqlErr *gqlerror.Error
+		_ = errors.As(err, &gqlErr)
 		errcode.Set(err, errcode.ValidationFailed)
 		return nil, gqlerror.List{gqlErr}
 	}

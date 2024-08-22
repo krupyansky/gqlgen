@@ -103,8 +103,9 @@ func collectFields(reqCtx *OperationContext, selSet ast.SelectionSet, satisfies 
 type CollectedField struct {
 	*ast.Field
 
-	Selections ast.SelectionSet
-	Deferrable *Deferrable
+	Selections   ast.SelectionSet
+	CachedFields []CollectedField
+	Deferrable   *Deferrable
 }
 
 func instanceOf(val string, satisfies []string) bool {

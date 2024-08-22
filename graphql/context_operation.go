@@ -17,6 +17,7 @@ type OperationContext struct {
 	Variables     map[string]any
 	OperationName string
 	Doc           *ast.QueryDocument
+	CachedFields  []CollectedField
 	Headers       http.Header
 
 	Operation              *ast.OperationDefinition
@@ -26,6 +27,10 @@ type OperationContext struct {
 	RootResolverMiddleware RootFieldMiddleware
 
 	Stats Stats
+}
+
+type QueryDocWrap struct {
+	Fields []CollectedField
 }
 
 func (c *OperationContext) Validate(ctx context.Context) error {
